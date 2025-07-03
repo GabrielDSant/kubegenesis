@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Arquivo de configuração principal
+CONFIG_FILE="kubegenesis.yml"
+
+# Função para ler um valor do YAML usando yq
+# Exemplo de uso: local provider=$(get_config '.config.cloudProvider')
+get_config() {
+  yq "$1" "$CONFIG_FILE"
+}
+
+# Função para processar a seção 'run'
+process_run_task() {
+  local task_name="$1"
+  local command_to_run="$2"
+
+  echo "--- Executing Task: $task_name ---"
+  echo "Running command: $command_to_run"
+  
+  # AVALIAÇÃO DO CONTEXTO!
+  # Usamos 'eval' para que as variáveis como ${config.clusterName} sejam substituídas
+  # por seus valores reais do YAML. Isso é poderoso, mas use com cuidado.
+  # Primeiro, substituímos as variáveis do nosso formato por variáveis de shell.
+  command_with_vars=$(echo "$command_to_run" | sed 's/\${\([^}]*\)}/$(get_config ".\1")/g')
+  
+  eval "$command_with_vars"
+  echo "--- Task Finished ---"
+  echo
+}
+
+# Função para processar a seção 'terraform'
+process_terraform_task() {
+    # ... aqui você colocaria a lógica para construir e executar o comando 'terraform apply'
+    # lendo as variáveis da seção 'vars' do YAML ...
+    echo "--- Processing Terraform Task ---"
+}
+
+# Função para processar a seção 'ansible'
+process_ansible_task() {
+    # ... aqui você colocaria a lógica para construir e executar o comando 'ansible-playbook'
+    # lendo as chaves 'playbook' ou 'module' do YAML ...
+    echo "--- Processing Ansible Task ---"
+}
+
+
+# --- PONTO DE ENTRADA PRINCIPAL DO SCRIPT ---
+
+echo "Starting KubeGenesis provisioner..."
+
+# 1. Validar se o arquivo de configuração existe
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "Error: Configuration file '$CONFIG_FILE' not found."
+  exit 1
+fi
+
+# 2. Ler o número de tarefas a serem executadas
+num_tasks=$(yq '.provisioningTasks | length' "$CONFIG_FILE")
+echo "Found $num_tasks tasks to execute."
+echo
+
+# 3. Iterar sobre cada tarefa na lista 'provisioningTasks'
+for i in $(seq 0 $(($num_tasks - 1))); do
+  # Pega o objeto da tarefa atual
+  task_path=".provisioningTasks[$i]"
+  
+  # Extrai o nome da tarefa
+  task_name=$(yq "$task_path.name" "$CONFIG_FILE")
+
+  # --- O INTERPRETADOR DA "LINGUAGEM" ---
+  # Verifica qual chave de ação (run, terraform, ansible) está presente na tarefa
+  
+  if [[ $(yq "$task_path | has(\"run\")" "$CONFIG_FILE") == "true" ]]; then
+    command=$(yq "$task_path.run" "$CONFIG_FILE")
+    process_run_task "$task_name" "$command"
+
+  elif [[ $(yq "$task_path | has(\"terraform\")" "$CONFIG_FILE") == "true" ]]; then
+    process_terraform_task # Passar o caminho da tarefa para processamento interno
+  
+  elif [[ $(yq "$task_path | has(\"ansible\")" "$CONFIG_FILE") == "true" ]]; then
+    process_ansible_task # Passar o caminho da tarefa para processamento interno
+
+  else
+    echo "Warning: Task '$task_name' has no recognizable action (run, terraform, ansible). Skipping."
+  fi
+done
+
+echo "KubeGenesis provisioning finished!"

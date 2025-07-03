@@ -1,0 +1,49 @@
+# kubegenesis.yml - Arquivo de definição do nosso cluster
+
+# Seção 1: Metadados e Configurações Globais
+config:
+  clusterName: "prod-cluster-alpha"
+  cloudProvider: "aws" # Provedores suportados: aws, gcp, local
+  region: "us-east-1"
+  kubernetesVersion: "1.28.2"
+
+# Seção 2: Definição da Infraestrutura (Nós do Cluster)
+nodes:
+  masters:
+    count: 3
+    instanceType: "t3.medium"
+  workers:
+    count: 3
+    instanceType: "t3.large"
+
+# Seção 3: Lista de Tarefas de Provisionamento (O "Playbook")
+# Aqui está a "linguagem" em si. É uma lista de ações a serem executadas.
+provisioningTasks:
+  - name: "Initialize Terraform and select workspace"
+    # 'run' é uma palavra-chave que seu script vai entender como "execute este comando"
+    run: |
+      terraform init
+      terraform workspace select ${config.clusterName} || terraform workspace new ${config.clusterName}
+
+  - name: "Provision cloud infrastructure"
+    # 'terraform' é outra palavra-chave. Seu script saberá que deve rodar 'terraform apply'
+    terraform:
+      # Passa variáveis para o comando do terraform
+      vars:
+        master_count: ${nodes.masters.count}
+        worker_instance_type: ${nodes.workers.instanceType}
+
+  - name: "Wait for SSH to be available on all nodes"
+    # 'ansible' é outra palavra-chave. Roda um playbook/módulo específico.
+    ansible:
+      module: "wait_for_connection"
+      timeout: 300
+
+  - name: "Apply common configuration to all nodes"
+    ansible:
+      playbook: "playbooks/common.yml"
+
+  - name: "Bootstrap the Kubernetes control plane"
+    ansible:
+      playbook: "playbooks/control-plane.yml"
+      tags: ["etcd", "kube-masters"]
