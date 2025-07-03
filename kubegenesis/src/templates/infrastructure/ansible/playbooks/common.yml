@@ -1,0 +1,18 @@
+# kubegenesis/src/templates/project_base/infrastructure/ansible/playbooks/common.yml
+---
+- name: Common system configurations
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update apt cache (Ubuntu)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install common packages
+      package:
+        name:
+          - curl
+          - wget
+          - git
+        state: present

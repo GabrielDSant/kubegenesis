@@ -1,0 +1,19 @@
+# kubegenesis/src/templates/project_base/infrastructure/ansible/playbooks/control-plane.yml
+---
+- name: Bootstrap Kubernetes Control Plane
+  hosts: masters
+  become: yes
+  tasks:
+    - name: Ensure containerd is installed
+      ansible.builtin.shell: |
+        # Commands to install containerd
+        echo "Installing containerd..."
+      args:
+        creates: /usr/bin/containerd
+
+    - name: Initialize Kubernetes master
+      ansible.builtin.shell: |
+        # Commands to run kubeadm init
+        echo "Running kubeadm init..."
+      args:
+        creates: /etc/kubernetes/admin.conf

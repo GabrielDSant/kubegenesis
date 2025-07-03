@@ -15,6 +15,10 @@ nodes:
   workers:
     count: 3
     instanceType: "t3.large"
+  gpuWorkers:
+    count: 1
+    instanceType: "p3.2xlarge" # Exemplo AWS
+    # Ou para GCP: "n1-standard-8" com "acceleratorType: "nvidia-tesla-v100", acceleratorCount: 1"
 
 # Seção 3: Lista de Tarefas de Provisionamento (O "Playbook")
 # Aqui está a "linguagem" em si. É uma lista de ações a serem executadas.
@@ -47,3 +51,21 @@ provisioningTasks:
     ansible:
       playbook: "playbooks/control-plane.yml"
       tags: ["etcd", "kube-masters"]
+
+# Seção 4: Configuração de uso de dados quentes
+
+storage:
+  defaultStorageClass: "standard" # Nome da StorageClass padrão
+  storageClasses:
+    - name: "standard"
+      provisioner: "kubernetes.io/aws-ebs" # Ou outro provisioner
+      parameters:
+        type: "gp3" # Tipo de volume EBS
+        iops: "3000"
+        throughput: "125"
+    - name: "high-performance"
+      provisioner: "kubernetes.io/aws-ebs"
+      parameters:
+        type: "io2" # Tipo de volume de alta performance
+        iops: "10000"
+        throughput: "500"

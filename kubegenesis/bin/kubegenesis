@@ -1,87 +1,119 @@
+# kubegenesis/bin/kubegenesis
 #!/bin/bash
 
-# Arquivo de configuração principal
-CONFIG_FILE="kubegenesis.yml"
+# --- Variáveis Globais ---
+KUBEG_ROOT_DIR=$(dirname "$(dirname "$(readlink -f "$0")")") # Pega o diretório raiz do projeto
+KUBEG_SRC_DIR="$KUBEG_ROOT_DIR/src"
+KUBEG_TEMPLATES_DIR="$KUBEG_SRC_DIR/templates"
+KUBEG_LIB_DIR="$KUBEG_SRC_DIR/lib"
 
-# Função para ler um valor do YAML usando yq
-# Exemplo de uso: local provider=$(get_config '.config.cloudProvider')
-get_config() {
-  yq "$1" "$CONFIG_FILE"
+# --- Incluir bibliotecas ---
+source "$KUBEG_LIB_DIR/utils.sh" # Para funções como log_info, log_error, etc.
+
+# --- Funções da CLI ---
+
+# kubegenesis init <project_name>
+cmd_init() {
+    local project_name="$1"
+    if [ -z "$project_name" ]; then
+        log_error "Usage: kubegenesis init <project_name>"
+        exit 1
+    fi
+
+    log_info "Initializing new KubeGenesis project: $project_name"
+    mkdir -p "$project_name"
+    cd "$project_name" || exit 1
+
+    # Perguntar ao usuário sobre o provedor de nuvem
+    local cloud_provider
+    read -p "Enter cloud provider (aws, gcp, local): " cloud_provider
+    cloud_provider=${cloud_provider:-local} # Default para 'local'
+
+    # Perguntar sobre o nome do cluster
+    local cluster_name
+    read -p "Enter cluster name (e.g., my-prod-cluster): " cluster_name
+    cluster_name=${cluster_name:-default-cluster}
+
+    log_info "Generating project structure..."
+
+    # Copiar templates básicos
+    cp -r "$KUBEG_TEMPLATES_DIR/project_base/"* .
+
+    # Processar o kubegenesis.yml inicial
+    sed -i "s/{{CLOUD_PROVIDER}}/$cloud_provider/g" kubegenesis.yml
+    sed -i "s/{{CLUSTER_NAME}}/$cluster_name/g" kubegenesis.yml
+
+    log_success "Project '$project_name' initialized successfully!"
+    log_info "Next steps: cd $project_name && kubegenesis create"
 }
 
-# Função para processar a seção 'run'
-process_run_task() {
-  local task_name="$1"
-  local command_to_run="$2"
+# kubegenesis create
+cmd_create() {
+    log_info "Starting cluster creation process..."
+    
+    # Validar se estamos em um diretório de projeto KubeGenesis
+    if [ ! -f "kubegenesis.yml" ]; then
+        log_error "kubegenesis.yml not found. Are you in a KubeGenesis project directory?"
+        exit 1
+    fi
 
-  echo "--- Executing Task: $task_name ---"
-  echo "Running command: $command_to_run"
-  
-  # AVALIAÇÃO DO CONTEXTO!
-  # Usamos 'eval' para que as variáveis como ${config.clusterName} sejam substituídas
-  # por seus valores reais do YAML. Isso é poderoso, mas use com cuidado.
-  # Primeiro, substituímos as variáveis do nosso formato por variáveis de shell.
-  command_with_vars=$(echo "$command_to_run" | sed 's/\${\([^}]*\)}/$(get_config ".\1")/g')
-  
-  eval "$command_with_vars"
-  echo "--- Task Finished ---"
-  echo
+    local config_file="kubegenesis.yml"
+    local num_tasks=$(yq '.provisioningTasks | length' "$config_file")
+    log_info "Found $num_tasks provisioning tasks."
+
+    for i in $(seq 0 $(($num_tasks - 1))); do
+        local task_path=".provisioningTasks[$i]"
+        local task_name=$(yq "$task_path.name" "$config_file")
+        log_info "Executing task: $task_name"
+        
+        # --- AQUI VAI A LÓGICA DE INTERPRETAÇÃO DA "LINGUAGEM" ---
+        # Por enquanto, apenas imprime o tipo de tarefa
+        if [[ $(yq "$task_path | has(\"run\")" "$config_file") == "true" ]]; then
+            log_info "  -> Type: run"
+        elif [[ $(yq "$task_path | has(\"terraform\")" "$config_file") == "true" ]]; then
+            log_info "  -> Type: terraform"
+        elif [[ $(yq "$task_path | has(\"ansible\")" "$config_file") == "true" ]]; then
+            log_info "  -> Type: ansible"
+        elif [[ $(yq "$task_path | has(\"kubernetes\")" "$config_file") == "true" ]]; then
+            log_info "  -> Type: kubernetes"
+        else
+            log_warn "  -> Type: Unknown (Skipping)"
+        fi
+    done
+
+    log_success "Cluster creation process completed (simulated)."
 }
 
-# Função para processar a seção 'terraform'
-process_terraform_task() {
-    # ... aqui você colocaria a lógica para construir e executar o comando 'terraform apply'
-    # lendo as variáveis da seção 'vars' do YAML ...
-    echo "--- Processing Terraform Task ---"
+# kubegenesis destroy
+cmd_destroy() {
+    log_info "Starting cluster destruction process..."
+    if [ ! -f "kubegenesis.yml" ]; then
+        log_error "kubegenesis.yml not found. Are you in a KubeGenesis project directory?"
+        exit 1
+    fi
+    log_warn "This will destroy all resources defined in kubegenesis.yml. Are you sure? (yes/no)"
+    read -p "> " confirm
+    if [ "$confirm" != "yes" ]; then
+        log_info "Destruction cancelled."
+        exit 0
+    fi
+    log_success "Cluster destroyed (simulated)."
 }
 
-# Função para processar a seção 'ansible'
-process_ansible_task() {
-    # ... aqui você colocaria a lógica para construir e executar o comando 'ansible-playbook'
-    # lendo as chaves 'playbook' ou 'module' do YAML ...
-    echo "--- Processing Ansible Task ---"
-}
-
-
-# --- PONTO DE ENTRADA PRINCIPAL DO SCRIPT ---
-
-echo "Starting KubeGenesis provisioner..."
-
-# 1. Validar se o arquivo de configuração existe
-if [ ! -f "$CONFIG_FILE" ]; then
-  echo "Error: Configuration file '$CONFIG_FILE' not found."
-  exit 1
-fi
-
-# 2. Ler o número de tarefas a serem executadas
-num_tasks=$(yq '.provisioningTasks | length' "$CONFIG_FILE")
-echo "Found $num_tasks tasks to execute."
-echo
-
-# 3. Iterar sobre cada tarefa na lista 'provisioningTasks'
-for i in $(seq 0 $(($num_tasks - 1))); do
-  # Pega o objeto da tarefa atual
-  task_path=".provisioningTasks[$i]"
-  
-  # Extrai o nome da tarefa
-  task_name=$(yq "$task_path.name" "$CONFIG_FILE")
-
-  # --- O INTERPRETADOR DA "LINGUAGEM" ---
-  # Verifica qual chave de ação (run, terraform, ansible) está presente na tarefa
-  
-  if [[ $(yq "$task_path | has(\"run\")" "$CONFIG_FILE") == "true" ]]; then
-    command=$(yq "$task_path.run" "$CONFIG_FILE")
-    process_run_task "$task_name" "$command"
-
-  elif [[ $(yq "$task_path | has(\"terraform\")" "$CONFIG_FILE") == "true" ]]; then
-    process_terraform_task # Passar o caminho da tarefa para processamento interno
-  
-  elif [[ $(yq "$task_path | has(\"ansible\")" "$CONFIG_FILE") == "true" ]]; then
-    process_ansible_task # Passar o caminho da tarefa para processamento interno
-
-  else
-    echo "Warning: Task '$task_name' has no recognizable action (run, terraform, ansible). Skipping."
-  fi
-done
-
-echo "KubeGenesis provisioning finished!"
+# --- Main CLI Logic ---
+case "$1" in
+    (init)
+        cmd_init "$2"
+        ;;
+    (create)
+        cmd_create
+        ;;
+    (destroy)
+        cmd_destroy
+        ;;
+    (*)
+        log_error "Unknown command: $1"
+        log_info "Usage: kubegenesis [init|create|destroy]"
+        exit 1
+        ;;
+esac
