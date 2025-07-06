@@ -1,119 +1,234 @@
-# kubegenesis/bin/kubegenesis
 #!/bin/bash
 
 # --- Variáveis Globais ---
-KUBEG_ROOT_DIR=$(dirname "$(dirname "$(readlink -f "$0")")") # Pega o diretório raiz do projeto
+KUBEG_ROOT_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
 KUBEG_SRC_DIR="$KUBEG_ROOT_DIR/src"
-KUBEG_TEMPLATES_DIR="$KUBEG_SRC_DIR/templates"
 KUBEG_LIB_DIR="$KUBEG_SRC_DIR/lib"
+KUBEG_TF_TEMPLATES_DIR="$KUBEG_SRC_DIR/terraform_templates"
+KUBEG_ANSIBLE_TEMPLATES_DIR="$KUBEG_SRC_DIR/ansible_templates"
+KUBEG_K8S_TEMPLATES_DIR="$KUBEG_SRC_DIR/kubernetes_templates"
 
 # --- Incluir bibliotecas ---
-source "$KUBEG_LIB_DIR/utils.sh" # Para funções como log_info, log_error, etc.
+source "$KUBEG_LIB_DIR/utils.sh"
+
+# --- Funções Auxiliares ---
+
+# Função para renderizar templates usando envsubst
+# Exporta as variáveis de configuração do YAML para o ambiente antes de chamar
+render_template() {
+    local template_path="$1"
+    local output_path="$2"
+    log_info "Rendering template: $template_path to $output_path"
+    envsubst < "$template_path" > "$output_path"
+    if [ $? -ne 0 ]; then
+        log_error "Failed to render template: $template_path"
+        return 1
+    fi
+    return 0
+}
+
+# Função para exportar variáveis do YAML para o ambiente
+export_config_vars() {
+    local config_file="$1"
+    log_info "Exporting configuration variables from $config_file..."
+
+    # Config
+    export KUBEG_CLUSTER_NAME=$(yq '.config.clusterName' "$config_file")
+    export KUBEG_CLOUD_PROVIDER=$(yq '.config.cloudProvider' "$config_file")
+    export KUBEG_REGION=$(yq '.config.region' "$config_file")
+    export KUBEG_KUBERNETES_VERSION=$(yq '.config.kubernetesVersion' "$config_file")
+    export KUBEG_SSH_KEY_PATH=$(yq '.config.sshKeyPath' "$config_file")
+
+    # Nodes
+    export KUBEG_MASTER_COUNT=$(yq '.nodes.masters.count' "$config_file")
+    export KUBEG_MASTER_INSTANCE_TYPE=$(yq '.nodes.masters.instanceType' "$config_file")
+    export KUBEG_MASTER_AMI=$(yq '.nodes.masters.ami' "$config_file")
+
+    export KUBEG_WORKER_COUNT=$(yq '.nodes.workers.count' "$config_file")
+    export KUBEG_WORKER_INSTANCE_TYPE=$(yq '.nodes.workers.instanceType' "$config_file")
+    export KUBEG_WORKER_AMI=$(yq '.nodes.workers.ami' "$config_file")
+
+    export KUBEG_GPU_WORKER_COUNT=$(yq '.nodes.gpuWorkers.count' "$config_file")
+    export KUBEG_GPU_WORKER_INSTANCE_TYPE=$(yq '.nodes.gpuWorkers.instanceType' "$config_file")
+    export KUBEG_GPU_WORKER_AMI=$(yq '.nodes.gpuWorkers.ami' "$config_file")
+
+    # Addons (para controle de fluxo)
+    export KUBEG_ADDON_CALICO_ENABLED=$(yq '.addons.calico.enabled' "$config_file")
+    export KUBEG_ADDON_CALICO_VERSION=$(yq '.addons.calico.version' "$config_file")
+    export KUBEG_ADDON_ARGOCD_ENABLED=$(yq '.addons.argocd.enabled' "$config_file")
+    export KUBEG_ADDON_ARGOCD_VERSION=$(yq '.addons.argocd.version' "$config_file")
+    export KUBEG_ADDON_PROMETHEUS_ENABLED=$(yq '.addons.prometheus.enabled' "$config_file")
+    export KUBEG_ADDON_PROMETHEUS_VERSION=$(yq '.addons.prometheus.version' "$config_file")
+    export KUBEG_ADDON_NVIDIA_GPU_SUPPORT_ENABLED=$(yq '.addons.nvidiaGpuSupport.enabled' "$config_file")
+}
 
 # --- Funções da CLI ---
 
-# kubegenesis init <project_name>
-cmd_init() {
-    local project_name="$1"
-    if [ -z "$project_name" ]; then
-        log_error "Usage: kubegenesis init <project_name>"
-        exit 1
-    fi
-
-    log_info "Initializing new KubeGenesis project: $project_name"
-    mkdir -p "$project_name"
-    cd "$project_name" || exit 1
-
-    # Perguntar ao usuário sobre o provedor de nuvem
-    local cloud_provider
-    read -p "Enter cloud provider (aws, gcp, local): " cloud_provider
-    cloud_provider=${cloud_provider:-local} # Default para 'local'
-
-    # Perguntar sobre o nome do cluster
-    local cluster_name
-    read -p "Enter cluster name (e.g., my-prod-cluster): " cluster_name
-    cluster_name=${cluster_name:-default-cluster}
-
-    log_info "Generating project structure..."
-
-    # Copiar templates básicos
-    cp -r "$KUBEG_TEMPLATES_DIR/project_base/"* .
-
-    # Processar o kubegenesis.yml inicial
-    sed -i "s/{{CLOUD_PROVIDER}}/$cloud_provider/g" kubegenesis.yml
-    sed -i "s/{{CLUSTER_NAME}}/$cluster_name/g" kubegenesis.yml
-
-    log_success "Project '$project_name' initialized successfully!"
-    log_info "Next steps: cd $project_name && kubegenesis create"
-}
-
-# kubegenesis create
+# kubegenesis create <config_file.yml>
 cmd_create() {
-    log_info "Starting cluster creation process..."
-    
-    # Validar se estamos em um diretório de projeto KubeGenesis
-    if [ ! -f "kubegenesis.yml" ]; then
-        log_error "kubegenesis.yml not found. Are you in a KubeGenesis project directory?"
+    local config_file="$1"
+    if [ -z "$config_file" ]; then
+        log_error "Usage: kubegenesis create <config_file.yml>"
+        exit 1
+    fi
+    if [ ! -f "$config_file" ]; then
+        log_error "Config file '$config_file' not found."
         exit 1
     fi
 
-    local config_file="kubegenesis.yml"
-    local num_tasks=$(yq '.provisioningTasks | length' "$config_file")
-    log_info "Found $num_tasks provisioning tasks."
+    log_info "Starting cluster creation process for '$config_file'..."
 
-    for i in $(seq 0 $(($num_tasks - 1))); do
-        local task_path=".provisioningTasks[$i]"
-        local task_name=$(yq "$task_path.name" "$config_file")
-        log_info "Executing task: $task_name"
-        
-        # --- AQUI VAI A LÓGICA DE INTERPRETAÇÃO DA "LINGUAGEM" ---
-        # Por enquanto, apenas imprime o tipo de tarefa
-        if [[ $(yq "$task_path | has(\"run\")" "$config_file") == "true" ]]; then
-            log_info "  -> Type: run"
-        elif [[ $(yq "$task_path | has(\"terraform\")" "$config_file") == "true" ]]; then
-            log_info "  -> Type: terraform"
-        elif [[ $(yq "$task_path | has(\"ansible\")" "$config_file") == "true" ]]; then
-            log_info "  -> Type: ansible"
-        elif [[ $(yq "$task_path | has(\"kubernetes\")" "$config_file") == "true" ]]; then
-            log_info "  -> Type: kubernetes"
-        else
-            log_warn "  -> Type: Unknown (Skipping)"
-        fi
-    done
+    # Exportar variáveis de configuração
+    export_config_vars "$config_file"
 
-    log_success "Cluster creation process completed (simulated)."
+    # --- FASE 1: PROVISIONAMENTO DA INFRAESTRUTURA (TERRAFORM) ---
+    log_info "Phase 1: Provisioning Infrastructure with Terraform..."
+    
+    local terraform_tmp_dir=$(mktemp -d -t kubegenesis-tf-XXXXXX)
+    log_info "Terraform working directory: $terraform_tmp_dir"
+
+    # Renderizar templates Terraform específicos do provedor
+    if [ "$KUBEG_CLOUD_PROVIDER" == "aws" ]; then
+        render_template "$KUBEG_TF_TEMPLATES_DIR/aws/main.tf.tpl" "$terraform_tmp_dir/main.tf" || exit 1
+        render_template "$KUBEG_TF_TEMPLATES_DIR/aws/variables.tf.tpl" "$terraform_tmp_dir/variables.tf" || exit 1
+        render_template "$KUBEG_TF_TEMPLATES_DIR/aws/outputs.tf.tpl" "$terraform_tmp_dir/outputs.tf" || exit 1
+    elif [ "$KUBEG_CLOUD_PROVIDER" == "local" ]; then
+        render_template "$KUBEG_TF_TEMPLATES_DIR/local/main.tf.tpl" "$terraform_tmp_dir/main.tf" || exit 1
+        render_template "$KUBEG_TF_TEMPLATES_DIR/local/cloud-init.yaml.tpl" "$terraform_tmp_dir/cloud-init.yaml" || exit 1
+    else
+        log_error "Unsupported cloud provider: $KUBEG_CLOUD_PROVIDER"
+        exit 1
+    fi
+    render_template "$KUBEG_TF_TEMPLATES_DIR/common/key_pair.tf.tpl" "$terraform_tmp_dir/key_pair.tf" || exit 1
+
+    # Executar Terraform
+    terraform -chdir="$terraform_tmp_dir" init || exit 1
+    terraform -chdir="$terraform_tmp_dir" workspace select "$KUBEG_CLUSTER_NAME" || terraform -chdir="$terraform_tmp_dir" workspace new "$KUBEG_CLUSTER_NAME" || exit 1
+    terraform -chdir="$terraform_tmp_dir" apply -auto-approve || exit 1
+
+    # Capturar outputs do Terraform para o Ansible
+    export KUBEG_MASTER_IPS=$(terraform -chdir="$terraform_tmp_dir" output -json master_ips | jq -r '.[]' | paste -s -d ' ')
+    export KUBEG_WORKER_IPS=$(terraform -chdir="$terraform_tmp_dir" output -json worker_ips | jq -r '.[]' | paste -s -d ' ')
+    export KUBEG_GPU_WORKER_IPS=$(terraform -chdir="$terraform_tmp_dir" output -json gpu_worker_ips | jq -r '.[]' | paste -s -d ' ')
+
+    # --- FASE 2: CONFIGURAÇÃO DO KUBERNETES (ANSIBLE) ---
+    log_info "Phase 2: Configuring Kubernetes with Ansible..."
+    
+    local ansible_tmp_dir=$(mktemp -d -t kubegenesis-ansible-XXXXXX)
+    log_info "Ansible working directory: $ansible_tmp_dir"
+
+    # Renderizar e copiar o inventário Ansible
+    render_template "$KUBEG_ANSIBLE_TEMPLATES_DIR/inventory.ini.tpl" "$ansible_tmp_dir/inventory.ini" || exit 1
+    render_template "$KUBEG_ANSIBLE_TEMPLATES_DIR/ansible.cfg.tpl" "$ansible_tmp_dir/ansible.cfg" || exit 1
+
+    # Renderizar e copiar os playbooks Ansible
+    render_template "$KUBEG_ANSIBLE_TEMPLATES_DIR/playbooks/common.yml.tpl" "$ansible_tmp_dir/common.yml" || exit 1
+    render_template "$KUBEG_ANSIBLE_TEMPLATES_DIR/playbooks/control-plane.yml.tpl" "$ansible_tmp_dir/control-plane.yml" || exit 1
+    render_template "$KUBEG_ANSIBLE_TEMPLATES_DIR/playbooks/worker-join.yml.tpl" "$ansible_tmp_dir/worker-join.yml" || exit 1
+    
+    # Executar playbooks Ansible
+    ansible-playbook -i "$ansible_tmp_dir/inventory.ini" "$ansible_tmp_dir/common.yml" || exit 1
+    ansible-playbook -i "$ansible_tmp_dir/inventory.ini" "$ansible_tmp_dir/control-plane.yml" || exit 1
+    ansible-playbook -i "$ansible_tmp_dir/inventory.ini" "$ansible_tmp_dir/worker-join.yml" || exit 1
+
+    # Condicionalmente executar playbook de GPU
+    if [ "$KUBEG_ADDON_NVIDIA_GPU_SUPPORT_ENABLED" == "true" ]; then
+        log_info "Installing NVIDIA GPU drivers and Container Toolkit..."
+        render_template "$KUBEG_ANSIBLE_TEMPLATES_DIR/playbooks/gpu-setup.yml.tpl" "$ansible_tmp_dir/gpu-setup.yml" || exit 1
+        ansible-playbook -i "$ansible_tmp_dir/inventory.ini" "$ansible_tmp_dir/gpu-setup.yml" || exit 1
+    fi
+
+    # --- FASE 3: INSTALAÇÃO DE ADDONS (KUBERNETES MANIFESTS/HELM) ---
+    log_info "Phase 3: Installing Kubernetes Addons..."
+
+    # Instalar Calico
+    if [ "$KUBEG_ADDON_CALICO_ENABLED" == "true" ]; then
+        log_info "Installing Calico..."
+        helm repo add projectcalico https://docs.projectcalico.org/charts --force-update || exit 1
+        helm install calico projectcalico/tigera-operator --version "$KUBEG_ADDON_CALICO_VERSION" --namespace tigera-operator --create-namespace || exit 1
+    fi
+
+    # Instalar Argo CD
+    if [ "$KUBEG_ADDON_ARGOCD_ENABLED" == "true" ]; then
+        log_info "Installing Argo CD..."
+        helm repo add argo https://argoproj.github.io/argo-helm --force-update || exit 1
+        helm install argocd argo/argo-cd --version "$KUBEG_ADDON_ARGOCD_VERSION" --namespace argocd --create-namespace || exit 1
+    fi
+
+    # Instalar Prometheus Stack
+    if [ "$KUBEG_ADDON_PROMETHEUS_ENABLED" == "true" ]; then
+        log_info "Installing Prometheus Stack..."
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update || exit 1
+        helm install prometheus prometheus-community/kube-prometheus-stack --version "$KUBEG_ADDON_PROMETHEUS_VERSION" --namespace monitoring --create-namespace || exit 1
+    fi
+
+    # --- FINALIZAÇÃO ---
+    log_info "Cleaning up temporary directories..."
+    rm -rf "$terraform_tmp_dir" "$ansible_tmp_dir"
+
+    log_success "Cluster '$KUBEG_CLUSTER_NAME' created successfully!"
+    log_info "To access your cluster, run: export KUBECONFIG=~/.kube/config-$KUBEG_CLUSTER_NAME"
+    log_info "Then: kubectl get nodes"
 }
 
-# kubegenesis destroy
-cmd_destroy() {
-    log_info "Starting cluster destruction process..."
-    if [ ! -f "kubegenesis.yml" ]; then
-        log_error "kubegenesis.yml not found. Are you in a KubeGenesis project directory?"
+# kubegenesis destroy <config_file.yml>
+cmd_destroy( ) {
+    local config_file="$1"
+    if [ -z "$config_file" ]; then
+        log_error "Usage: kubegenesis destroy <config_file.yml>"
         exit 1
     fi
-    log_warn "This will destroy all resources defined in kubegenesis.yml. Are you sure? (yes/no)"
+    if [ ! -f "$config_file" ]; then
+        log_error "Config file '$config_file' not found."
+        exit 1
+    fi
+
+    export_config_vars "$config_file"
+
+    log_warn "This will destroy all resources for cluster '$KUBEG_CLUSTER_NAME' in '$KUBEG_CLOUD_PROVIDER'. Are you sure? (yes/no)"
     read -p "> " confirm
     if [ "$confirm" != "yes" ]; then
         log_info "Destruction cancelled."
         exit 0
     fi
-    log_success "Cluster destroyed (simulated)."
+
+    log_info "Starting cluster destruction process..."
+
+    local terraform_tmp_dir=$(mktemp -d -t kubegenesis-tf-XXXXXX)
+    log_info "Terraform working directory: $terraform_tmp_dir"
+
+    # Renderizar templates Terraform específicos do provedor para destruição
+    if [ "$KUBEG_CLOUD_PROVIDER" == "aws" ]; then
+        render_template "$KUBEG_TF_TEMPLATES_DIR/aws/main.tf.tpl" "$terraform_tmp_dir/main.tf" || exit 1
+        render_template "$KUBEG_TF_TEMPLATES_DIR/aws/variables.tf.tpl" "$terraform_tmp_dir/variables.tf" || exit 1
+        render_template "$KUBEG_TF_TEMPLATES_DIR/aws/outputs.tf.tpl" "$terraform_tmp_dir/outputs.tf" || exit 1
+    elif [ "$KUBEG_CLOUD_PROVIDER" == "local" ]; then
+        render_template "$KUBEG_TF_TEMPLATES_DIR/local/main.tf.tpl" "$terraform_tmp_dir/main.tf" || exit 1
+        render_template "$KUBEG_TF_TEMPLATES_DIR/local/cloud-init.yaml.tpl" "$terraform_tmp_dir/cloud-init.yaml" || exit 1
+    fi
+    render_template "$KUBEG_TF_TEMPLATES_DIR/common/key_pair.tf.tpl" "$terraform_tmp_dir/key_pair.tf" || exit 1
+
+    terraform -chdir="$terraform_tmp_dir" init || exit 1
+    terraform -chdir="$terraform_tmp_dir" workspace select "$KUBEG_CLUSTER_NAME" || exit 1
+    terraform -chdir="$terraform_tmp_dir" destroy -auto-approve || exit 1
+
+    log_info "Cleaning up temporary directories..."
+    rm -rf "$terraform_tmp_dir"
+
+    log_success "Cluster '$KUBEG_CLUSTER_NAME' destroyed successfully!"
 }
 
 # --- Main CLI Logic ---
 case "$1" in
-    (init)
-        cmd_init "$2"
+    create)
+        cmd_create "$2"
         ;;
-    (create)
-        cmd_create
+    destroy)
+        cmd_destroy "$2"
         ;;
-    (destroy)
-        cmd_destroy
-        ;;
-    (*)
+    *)
         log_error "Unknown command: $1"
-        log_info "Usage: kubegenesis [init|create|destroy]"
+        log_info "Usage: kubegenesis [create|destroy] <config_file.yml>"
         exit 1
         ;;
 esac

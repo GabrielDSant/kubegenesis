@@ -13,5 +13,5 @@ log_warn() {
 }
 
 log_error() {
-    echo -e "\e[31m[ERROR]\e[0m $1"
+    echo -e "\e[31m[ERROR]\e[0m $1" >&2 # Erros para stderr
 }
