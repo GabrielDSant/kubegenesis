@@ -1,0 +1,31 @@
+config:
+  clusterName: laravel-dev-cluster
+  cloudProvider: local # Define o provedor como ambiente local (Libvirt/KVM)
+  kubernetesVersion: 1.28.0 # Versão do Kubernetes
+  sshKeyPath: ~/.ssh/id_rsa # Caminho completo para a chave SSH privada que será usada para acessar as VMs locais
+
+nodes:
+  masters:
+    count: 1 # Um nó master é suficiente para um ambiente de desenvolvimento/teste local
+    instanceType: 4096 # 4GB de RAM para o master
+  workers:
+    count: 1 # Um nó worker para rodar a aplicação Laravel
+    instanceType: 8192 # 8GB de RAM para o worker (considerando PHP, Nginx, MySQL/PostgreSQL em containers)
+  gpuWorkers:
+    count: 0 # Não é necessário para uma aplicação Laravel típica
+    instanceType: 0
+
+addons:
+  calico:
+    enabled: true # Essencial para a rede do cluster
+    version: 3.26.1
+  argocd:
+    enabled: true # Recomendado para deploy GitOps da aplicação Laravel
+    version: 5.36.1
+  prometheus:
+    enabled: false # Pode ser habilitado se monitoramento for necessário
+    version: 25.2.0
+  nvidiaGpuSupport:
+    enabled: false # Não é necessário
+
+

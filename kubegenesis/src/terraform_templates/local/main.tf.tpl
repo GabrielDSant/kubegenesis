@@ -82,3 +82,33 @@ resource "libvirt_domain" "worker" {
 resource "libvirt_domain" "gpu_worker" {
   count = var.gpu_worker_count
   name   =
+
+"${var.cluster_name}-gpu-worker-${count.index}"
+  memory = var.gpu_worker_instance_type
+  vcpu   = 2
+  
+  disk {
+    volume_id = libvirt_volume.os_image.id
+  }
+
+  cloudinit = libvirt_cloudinit_disk.commoninit.id
+
+  network_interface {
+    network_name = "default"
+    wait_for_lease = true
+  }
+}
+
+output "master_ips" {
+  value = libvirt_domain.master[*].network_interface[0].addresses[0]
+}
+
+output "worker_ips" {
+  value = libvirt_domain.worker[*].network_interface[0].addresses[0]
+}
+
+output "gpu_worker_ips" {
+  value = libvirt_domain.gpu_worker[*].network_interface[0].addresses[0]
+}
+
+

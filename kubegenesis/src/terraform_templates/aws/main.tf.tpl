@@ -1,3 +1,20 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.0"
+    }
+  }
+}
+
 # kubegenesis/src/terraform_templates/aws/main.tf.tpl
 
 provider "aws" {
@@ -220,3 +237,5 @@ resource "aws_instance" "gpu_worker" {
     "kubernetes.io/cluster/${var.cluster_name}" = "owned"
   }
 }
+
+
